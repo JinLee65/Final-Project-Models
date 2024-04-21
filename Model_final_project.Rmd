@@ -1,0 +1,273 @@
+---
+title: "Modeling_final_project"
+output: html_document
+date: "2024-04-20"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(tidyverse)    #Essential Functions
+library(rvest)        #Read Tables From Webpages
+library(noncensus)
+library(readr)
+library(knitr) 
+library(ggplot2)
+```
+
+
+
+```{r}
+EFI_final <- read_csv(file = "Clean_EFI.csv")
+Billy <- read_csv(file = "Billionaires Statistics Dataset.csv")
+New_2023 <- read_csv(file = "world-data-2023.csv")
+EFI_2024 <- read_csv(file = "2024_indexofeconomicfreedom_data.csv")
+
+Raw_Data <- EFI_final%>%
+  select(-c(2:4)) %>%
+  select(-c(3:14))
+
+```
+
+
+
+Data cleaning for the 2024 dataset which we are trying to predict:
+```{r}
+EFI_2024 <- EFI_2024%>%
+  mutate_at(4:16, as.numeric) %>%
+  arrange(`Overall Score`)
+
+str(EFI_2024)
+
+anti_join(Raw_Data, EFI_2024, by="Country")
+
+  #Countries in Raw_data but not matching with EFI fro 2024
+    #Hong Kong, Korea South, Macedonia, Macau, Turkey, Philippines, Bahamas, C�te d'Ivoire, S�o Tom� and Pr�ncipe,Gambia, Congo Democratic Republic of the Congo, Congo Republic of, Korea North
+  #North Korea
+
+Raw_Data = Raw_Data %>%
+  mutate(Country = ifelse(Country=="Korea South","South Korea",Country), 
+         Country = ifelse(Country=="Korea North","North Korea",Country),
+         Country = ifelse(Country=="Macedonia","North Macedonia",Country),
+         Country = ifelse(Country=="Turkey","Türkiye",Country),
+         Country = ifelse(Country=="Philippines","The Philippines",Country),
+         Country = ifelse(Country=="Bahamas","The Bahamas",Country),
+         Country = ifelse(Country=="C�te d'Ivoire","Côte d'Ivoire",Country),
+         Country = ifelse(Country=="S�o Tom� and Pr�ncipe","São Tomé and Príncipe",Country),
+         Country = ifelse(Country=="Gambia","The Gambia",Country),
+         Country = ifelse(Country=="Congo Democratic Republic of the Congo","Democratic Republic of Congo",Country),
+         Country = ifelse(Country=="Congo Republic of","Republic of Congo",Country))
+
+NEW <- full_join(Raw_Data, EFI_2024, by = "Country") 
+
+Final_joined <- NEW %>%
+  select(-c(17)) %>%
+  rename('2024' = "Year") %>%
+  select(-c(19:30)) %>%
+  unite('2024',"Overall Score", sep = '_') %>%
+  rename('2024_Score' = '2024') %>%
+  mutate(Total_tax_billions = GDP_Billions_PPP * Tax_Burden_percent_of_GDP,
+         Total_Govt_Expenditure_billions = Govt_Expenditure_percent_of_GDP * GDP_Billions_PPP,
+         Total_Public_Debt_billions = Public_Debt_percent_of_GDP * GDP_Billions_PPP) %>%
+  select(Country, '2024_Score', '2019_Score',Income_Tax_Rate, Corporate_Tax_Rate, Tax_Burden_percent_of_GDP, Total_tax_billions, Govt_Expenditure_percent_of_GDP, Total_Govt_Expenditure_billions, everything()) %>%
+  mutate_at(2, as.numeric)
+
+head(Final_joined)
+
+write.csv(Final_joined, file = "Final_joined.csv", row.names = FALSE)
+```
+
+
+
+Model Building
+
+Step 1:
+
+ - Splitting the dataset into training and testing sets
+```{r}
+set.seed(200)
+
+train_index <- sample(1:nrow(Raw_Data), 0.8 * nrow(Raw_Data))
+train_data <- Raw_Data[train_index, ]
+test_data <- Raw_Data[-train_index, ]
+
+```
+
+1st step: Create a Linear Regression Model to choose which predictors are best and most significant at predicting Economic success, in our case we are going to use *Five_Year_GDP_Growth_Rate*
+
+```{r}
+#full model without ANY data tranformation
+
+Full_Model <- lm( Final_joined[[3]]~., data = Final_joined[-c(1,2,3)])
+summary(Full_Model)
+
+
+#subset of numerical and relevant columns to see the correlation amongest eachother
+
+Final_joined_sub <- Final_joined %>%
+  select(-c(1,2))
+
+na.omit(Final_joined_sub)
+
+cor(na.omit(Final_joined_sub))
+
+#corrplot(cor(na.omit(Final_joined_sub)),tl.cex=0.3)
+
+```
+
+
+
+
+# stepwise selection method
+
+```{r}
+library(readr)
+library(car)
+library(corrplot) #Install first if needed
+library(leaps)
+source("ShowSubsets.R")
+
+#Omit all the NA's out of the data set for stepwise selection methods
+Final_joined_no_NA <- na.omit(Final_joined)
+
+#Create a full model, where 2019_score is regressing on every other relevant variable
+Full_Model1 <- lm( Final_joined_no_NA[[3]]~., data = Final_joined_no_NA[-c(1,2,3)])
+summary(Full_Model)
+
+#Create MSE
+MSE = (summary(Full_Model)$sigma)^2
+
+#Create an empty model for forward selection
+none = lm(Final_joined_no_NA[[3]]~1, data = Final_joined_no_NA[-c(1,2,3)])
+summary(none)
+
+#Forward selection: Lowest AIC = -2.03[GDP_per_Capita_PPP + Tariff_Rate + GDP_Growth_Rate + Inflation_rate + Tax_Burden_percent_of_GDP + Govt_Expenditure_percent_of_GDP + Corporate_Tax_Rate]
+step(none, scope=list(upper=Full_Model1), scale=MSE, direction="forward")
+
+#Backward selection: Lowest AIC = -2.03[GDP_per_Capita_PPP + Tariff_Rate + GDP_Growth_Rate + Inflation_rate + Tax_Burden_percent_of_GDP + Govt_Expenditure_percent_of_GDP + Corporate_Tax_Rate]
+step(Full_Model1, scale=MSE)
+
+#Stepwise selection: -2.03[GDP_per_Capita_PPP + Tariff_Rate + GDP_Growth_Rate + Inflation_rate + Tax_Burden_percent_of_GDP + Govt_Expenditure_percent_of_GDP + Corporate_Tax_Rate]
+step(none, scope=list(upper=Full_Model1), scale=MSE)
+
+```
+
+#Going forward, we will utilize the prediction variables :
+
+  - GDP_per_Capita_PPP
+  - Tariff_Rate
+  - GDP_Growth_Rate
+  - Inflation_rate
+  - Tax_Burden_percent_of_GDP
+  - Govt_Expenditure_percent_of_GDP
+  - Corporate_Tax_Rate
+
+
+#With the chosen predictors, we are now testing the linear conditions of the model
+```{r}
+Chosen_model = lm(Final_joined[[3]] ~ GDP_per_Capita_PPP + 
+                    Tariff_Rate + 
+                    GDP_Growth_Rate + 
+                    Inflation_rate + 
+                    Tax_Burden_percent_of_GDP + 
+                    Govt_Expenditure_percent_of_GDP + 
+                    Corporate_Tax_Rate, 
+                  data = Final_joined)
+summary(Chosen_model)
+#A note made here is that There may be a need for an interaction term between GDP related and derived variables, which makes sense because they are rates
+plot(Chosen_model)
+#linearity is not strong right now, and there is also some outliers, specifically row 168 and 179, therefore below, we will examine the graphs without these outliers
+Final_joined$Country[168]
+Final_joined$Country[179]
+
+Final_joined %>%
+  filter(Country == "Kiribati" | Country == "Venezuela")
+
+No_K_V = subset(Final_joined_no_NA, Country!="Venezuela", Country!="Kiribati")
+
+Chosen_model_pt2 = lm(No_K_V[[3]] ~ GDP_per_Capita_PPP + 
+                    Tariff_Rate + 
+                    GDP_Growth_Rate + 
+                    Inflation_rate + 
+                    Tax_Burden_percent_of_GDP + 
+                    Govt_Expenditure_percent_of_GDP + 
+                    Corporate_Tax_Rate, 
+                  data = No_K_V)
+plot(Chosen_model_pt2)
+
+#Taking the outliers out satisfies the linearity conditions more, therefore, we will now work with the dataset No_K_V
+```
+
+#In this chunk, we are gonna see if interaction variables do anything by using nested anova tests, first I am going to calculate every combination of the predictor variables and do another stepwise selection to keeo the ones that means something
+
+  -GDP_per_Capita_PPP * GDP_Growth_Rate
+  - 
+```{r}
+Chosen_model_pt3 = lm(No_K_V[[3]] ~ GDP_per_Capita_PPP + 
+                    Tariff_Rate + 
+                    GDP_Growth_Rate + 
+                    Inflation_rate + 
+                    Tax_Burden_percent_of_GDP + 
+                    Govt_Expenditure_percent_of_GDP + 
+                    Corporate_Tax_Rate +
+                      GDP_per_Capita_PPP * Tariff_Rate + 
+                                     GDP_per_Capita_PPP * GDP_Growth_Rate + 
+                                     GDP_per_Capita_PPP * Inflation_rate + 
+                                     GDP_per_Capita_PPP * Tax_Burden_percent_of_GDP + 
+                                     GDP_per_Capita_PPP * Govt_Expenditure_percent_of_GDP + 
+                                     GDP_per_Capita_PPP * Corporate_Tax_Rate + 
+                                     
+                                     Tariff_Rate * GDP_Growth_Rate + 
+                                     Tariff_Rate * Inflation_rate + 
+                                     Tariff_Rate * Tax_Burden_percent_of_GDP + 
+                                     Tariff_Rate * Govt_Expenditure_percent_of_GDP + 
+                                     Tariff_Rate * Corporate_Tax_Rate + 
+                                     
+                                     GDP_Growth_Rate * Inflation_rate + 
+                                     GDP_Growth_Rate * Tax_Burden_percent_of_GDP + 
+                                     GDP_Growth_Rate * Govt_Expenditure_percent_of_GDP + 
+                                     GDP_Growth_Rate * Corporate_Tax_Rate + 
+                                     
+                                     Inflation_rate * Tax_Burden_percent_of_GDP + 
+                                     Inflation_rate * Govt_Expenditure_percent_of_GDP + 
+                                     Inflation_rate * Corporate_Tax_Rate + 
+                                     
+                                     Tax_Burden_percent_of_GDP * Govt_Expenditure_percent_of_GDP + 
+                                     Tax_Burden_percent_of_GDP * Corporate_Tax_Rate + 
+                                     
+                                     Govt_Expenditure_percent_of_GDP * Corporate_Tax_Rate, 
+                  data = No_K_V)
+summary(Chosen_model_pt3)
+
+MSE2 = (summary(Chosen_model_pt3)$sigma)^2
+step(none, scope=list(upper=Chosen_model_pt3), scale=MSE2)
+
+trying <- lm(formula = Final_joined_no_NA[[3]] ~ GDP_per_Capita_PPP + Tariff_Rate + 
+    GDP_Growth_Rate + Inflation_rate + Govt_Expenditure_percent_of_GDP + 
+    Tax_Burden_percent_of_GDP + GDP_Growth_Rate:Inflation_rate + 
+    GDP_Growth_Rate:Govt_Expenditure_percent_of_GDP + Tariff_Rate:GDP_Growth_Rate + 
+    Govt_Expenditure_percent_of_GDP:Tax_Burden_percent_of_GDP, 
+    data = Final_joined_no_NA[-c(1, 2, 3)])
+
+summary(trying)
+
+plot(trying)
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
